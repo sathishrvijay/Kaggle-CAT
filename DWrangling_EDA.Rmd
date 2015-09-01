@@ -1,0 +1,613 @@
+---
+title: "DWrangling & EDA for CAT competition"
+author: "Vijay Sathish"
+date: "Saturday, July 04, 2015"
+output: html_document
+---
+
+### Load all the libraries
+```{r}
+
+require(ggplot2)
+require(GGally)
+require(reshape2)
+require(gridExtra)
+require(dplyr)
+
+```
+
+### Load in all the tables
+
+```{r}
+
+raw.train <- read.csv("D:/Kaggle/CAT/data/train_set.csv", header = T)
+raw.test <- read.csv("D:/Kaggle/CAT/data/test_set.csv", header = T)
+
+raw.tubes <- read.csv("D:/Kaggle/CAT/data/tube.csv", header = T)
+raw.bom <- read.csv("D:/Kaggle/CAT/data/bill_of_materials.csv", header = T)
+
+raw.spec <- read.csv("D:/Kaggle/CAT/data/specs.csv", header = T)
+
+# Probably not going to use this
+raw.components <- read.csv("D:/Kaggle/CAT/data/components.csv", header = T)
+raw.tube_end_form <- read.csv("D:/Kaggle/CAT/data/tube_end_form.csv", header = T)
+
+
+```
+
+Notes -
+- Bracket pricing has only two levels 'yes' and 'no'
+- 'id' in raw.test is a unique id for a bid; no corresponding column for the train dataset
+- There are way more 'id's than 'tube_assembly_id's (4x more) which means that one type of tube gets multiple bids 
+- Merge and split by 'id' wont work; we first have to generate an id for train test too
+- Train and test set are both about 30k observations, so roughly equal sized
+
+### Explore supplier stats
+
+```{r}
+common_suppliers <- intersect(levels(raw.train$supplier), levels(raw.test$supplier))
+length(common_suppliers)
+setdiff(levels(raw.train$supplier), levels(raw.test$supplier))
+setdiff(levels(raw.test$supplier), levels(raw.train$supplier))
+
+summary(raw.train$bracket_pricing)
+summary(raw.test$bracket_pricing)
+
+```
+
+Notes -
+- 57 suppliers in train set
+- 56 suppliers in test set
+- There is a substantial overlap (45 common); but it also means some suppliers in test set have no data from training set
+- Note: *** Plain label encoding separately for train and test set WILL screw up the numbers. Merge suppliers to first fit label encoder, then transform separately
+- Bracket pricing for ~26K points and non-bracket pricing for ~4K points in both data sets
+
+### Tube count stats
+Notes - Engineer simple counts features per tube_assembly_id
+- Num specs types per id
+- Num comp_id types per id
+- Num comp_name types per id
+- Num comp_type types per id
+- Total comp_ids per id
+- Total comp_name per id
+- Total comp_types per id
+- Note the last 3 incorporate quantities various former 3 only count unique comp_*
+- Also note that last 3 are ALL the same, however you split it, so we need only one variable for those
+
+```{r}
+# 8 columns because of 5 stats plus 'tube_assembly_id'
+tube_stats <- as.data.frame(matrix(0, ncol = 5, nrow = dim(raw.tubes)[1]))
+names(tube_stats) <- c('uniq_specs', 'uniq_comp_ids', 'uniq_comp_types', 'uniq_comp_names', 'total_comps')
+tube_stats$tube_assembly_id <- raw.tubes$tube_assembly_id
+
+
+```
+
+
+
+### Transform Bill of materials into a wide form sparse matrix - upto 8 components per 'tube_assembly_id'
+
+```{r}
+
+# 1. Transform each component column from long to wide form and store as a separate temporary dataframe
+bom.wide1 <- dcast(raw.bom, tube_assembly_id ~ component_id_1, value.var = "quantity_1")
+bom.wide1[is.na(bom.wide1)] <- 0
+bom.wide2 <- dcast(raw.bom, tube_assembly_id ~ component_id_2, value.var = "quantity_2")
+bom.wide2[is.na(bom.wide2)] <- 0
+bom.wide3 <- dcast(raw.bom, tube_assembly_id ~ component_id_3, value.var = "quantity_3")
+bom.wide3[is.na(bom.wide3)] <- 0
+bom.wide4 <- dcast(raw.bom, tube_assembly_id ~ component_id_4, value.var = "quantity_4")
+bom.wide4[is.na(bom.wide4)] <- 0
+bom.wide5 <- dcast(raw.bom, tube_assembly_id ~ component_id_5, value.var = "quantity_5")
+bom.wide5[is.na(bom.wide5)] <- 0
+bom.wide6 <- dcast(raw.bom, tube_assembly_id ~ component_id_6, value.var = "quantity_6")
+bom.wide6[is.na(bom.wide6)] <- 0
+bom.wide7 <- dcast(raw.bom, tube_assembly_id ~ component_id_7, value.var = "quantity_7")
+bom.wide7[is.na(bom.wide7)] <- 0
+bom.wide8 <- dcast(raw.bom, tube_assembly_id ~ component_id_8, value.var = "quantity_8")
+bom.wide8[is.na(bom.wide8)] <- 0
+
+# 1a. Get tube_stats from BOM
+# Convert the NAs to 0 prior to summing
+raw.bom[is.na(raw.bom)] <- 0
+# Count tot_comps per tube_assembly_id
+tube_stats$total_comps = raw.bom$quantity_1 + raw.bom$quantity_2 +
+    raw.bom$quantity_3 + raw.bom$quantity_4 +
+    raw.bom$quantity_5 + raw.bom$quantity_6 +
+    raw.bom$quantity_7 + raw.bom$quantity_8
+# Count uniq_comp_ids per tube_assembly_id
+tube_stats$uniq_comp_ids = as.numeric(!is.na(raw.bom$component_id_1)) + as.numeric(!is.na(raw.bom$component_id_2)) +
+    as.numeric(!is.na(raw.bom$component_id_3)) + as.numeric(!is.na(raw.bom$component_id_4)) +
+    as.numeric(!is.na(raw.bom$component_id_5)) + as.numeric(!is.na(raw.bom$component_id_6)) +
+    as.numeric(!is.na(raw.bom$component_id_7)) + as.numeric(!is.na(raw.bom$component_id_8))
+
+# 2. Get the union of component names C-xxxx
+components <- union(names(bom.wide1), names(bom.wide2))
+components <- union(components, names(bom.wide3))
+components <- union(components, names(bom.wide4))
+components <- union(components, names(bom.wide5))
+components <- union(components, names(bom.wide6))
+components <- union(components, names(bom.wide7))
+components <- union(components, names(bom.wide8))
+length(components)
+
+# 3. Create an empty output dataframe with correct dimensions and column names
+bom.wide <- as.data.frame(matrix(0, ncol = length(components), nrow = dim(bom.wide1)[1]))
+names(bom.wide) <- components
+# 3a. Initialize the tube_assembly_id for bom.wide
+bom.wide$tube_assembly_id <- bom.wide1$tube_assembly_id
+
+# 4. Remove "tube_assembly_id" from components
+components <- setdiff(components, "tube_assembly_id")
+
+# 5. Combine all the temporary data frames into a single wide dataframe by summing up component quantities
+# http://stackoverflow.com/questions/19730806/r-access-data-frame-column-using-variable
+for (col in components) {
+  if (length(intersect(names(bom.wide1), col))) {
+    bom.wide[, col] <- bom.wide[, col] + bom.wide1[, col]
+  }
+  if (length(intersect(names(bom.wide2), col))) {
+    bom.wide[, col] <- bom.wide[, col] + bom.wide2[, col]
+  }
+  if (length(intersect(names(bom.wide3), col))) {
+    bom.wide[, col] <- bom.wide[, col] + bom.wide3[, col]
+  }
+  if (length(intersect(names(bom.wide4), col))) {
+    bom.wide[, col] <- bom.wide[, col] + bom.wide4[, col]
+  }
+  if (length(intersect(names(bom.wide5), col))) {
+    bom.wide[, col] <- bom.wide[, col] + bom.wide5[, col]
+  }
+  if (length(intersect(names(bom.wide6), col))) {
+    bom.wide[, col] <- bom.wide[, col] + bom.wide6[, col]
+  }
+  if (length(intersect(names(bom.wide7), col))) {
+    bom.wide[, col] <- bom.wide[, col] + bom.wide7[, col]
+  }
+  if (length(intersect(names(bom.wide8), col))) {
+    bom.wide[, col] <- bom.wide[, col] + bom.wide8[, col]
+  }
+}
+
+# 5a. Get rid of the 'NA' column (normally, empty value is interpreted as na, but since csv comes with 'NA', get rid of that)
+bom.wide$"NA" <- NULL
+dim(bom.wide)
+
+# 6. Remove all temporary dataframes
+remove(bom.wide1)
+remove(bom.wide2)
+remove(bom.wide3)
+remove(bom.wide4)
+remove(bom.wide5)
+remove(bom.wide6)
+remove(bom.wide7)
+remove(bom.wide8)
+
+# 7. Write the transformed output back to CSV
+write.csv(bom.wide, "D:/Kaggle/CAT/data/transformed/bom_wide.csv", row.names = F, na = "", sep = ",", col.names = T)
+
+```
+
+Notes -
+- *** Total of 2048 components after the wide form transformation
+- Since, dealing with wide form like this will be difficult, apply TfidfTransformer followed by TruncatedSVD to reduce feature set from BOM
+
+### Remap components to component_types by joining bill_of_materials.csv and components.csv
+```{r}
+
+# Go through each component variable in raw.bom and re-map to component type based on components.csv
+
+map_comp_to_comp_type <- function(df_new, x_join_var, new_var_name) {
+  #x_join_var = 'component_id_1'
+  #new_var_name = 'comp_type_1'
+  # Go through each component variable in raw.bom and assign quantity to component type based on components.csv
+  df_new <- merge(x = df_new, y = raw.components, by.x = x_join_var, by.y = 'component_id', all.x = T, incomparables = NA)
+  # Rename the 'component_type_id' column and drop 'name' and 'component_id_x' column after join
+  names(df_new)[names(df_new) == "component_type_id"] <- new_var_name
+  df_new$name <- NULL
+  df_new$x_join_var <- NULL
+  return (df_new)
+  
+}
+
+raw.comp_type <- raw.bom
+raw.comp_type = map_comp_to_comp_type(raw.comp_type, 'component_id_1', 'comp_type_1')
+raw.comp_type = map_comp_to_comp_type(raw.comp_type, 'component_id_2', 'comp_type_2')
+raw.comp_type = map_comp_to_comp_type(raw.comp_type, 'component_id_3', 'comp_type_3')
+raw.comp_type = map_comp_to_comp_type(raw.comp_type, 'component_id_4', 'comp_type_4')
+raw.comp_type = map_comp_to_comp_type(raw.comp_type, 'component_id_5', 'comp_type_5')
+raw.comp_type = map_comp_to_comp_type(raw.comp_type, 'component_id_6', 'comp_type_6')
+raw.comp_type = map_comp_to_comp_type(raw.comp_type, 'component_id_7', 'comp_type_7')
+raw.comp_type = map_comp_to_comp_type(raw.comp_type, 'component_id_8', 'comp_type_8')
+# Sort dataframe by 'tube_assembly_id'
+raw.comp_type <- arrange(raw.comp_type, tube_assembly_id)
+
+```
+
+Notes - 
+- 29 component types in all; hence much more compressed format than component_id
+
+
+### Transform newly minted raw.comp_type to wide form sparse matrix
+```{r}
+# 1. Transform each component column from long to wide form and store as a separate temporary dataframe
+comp_type.wide1 <- dcast(raw.comp_type, tube_assembly_id ~ comp_type_1, value.var = "quantity_1")
+comp_type.wide1[is.na(comp_type.wide1)] <- 0
+comp_type.wide2 <- dcast(raw.comp_type, tube_assembly_id ~ comp_type_2, value.var = "quantity_2")
+comp_type.wide2[is.na(comp_type.wide2)] <- 0
+comp_type.wide3 <- dcast(raw.comp_type, tube_assembly_id ~ comp_type_3, value.var = "quantity_3")
+comp_type.wide3[is.na(comp_type.wide3)] <- 0
+comp_type.wide4 <- dcast(raw.comp_type, tube_assembly_id ~ comp_type_4, value.var = "quantity_4")
+comp_type.wide4[is.na(comp_type.wide4)] <- 0
+comp_type.wide5 <- dcast(raw.comp_type, tube_assembly_id ~ comp_type_5, value.var = "quantity_5")
+comp_type.wide5[is.na(comp_type.wide5)] <- 0
+comp_type.wide6 <- dcast(raw.comp_type, tube_assembly_id ~ comp_type_6, value.var = "quantity_6")
+comp_type.wide6[is.na(comp_type.wide6)] <- 0
+comp_type.wide7 <- dcast(raw.comp_type, tube_assembly_id ~ comp_type_7, value.var = "quantity_7")
+comp_type.wide7[is.na(comp_type.wide7)] <- 0
+comp_type.wide8 <- dcast(raw.comp_type, tube_assembly_id ~ comp_type_8, value.var = "quantity_8")
+comp_type.wide8[is.na(comp_type.wide8)] <- 0
+
+# 2. Get the union of component names C-xxxx
+num_comp_types <- length(levels(raw.components$component_type_id))
+comp_type_names <- levels(raw.components$component_type_id)
+
+# 3. Create an empty output dataframe with correct dimensions and column names
+comp_type.wide <- as.data.frame(matrix(0, ncol = num_comp_types, nrow = dim(bom.wide)[1]))
+names(comp_type.wide) <- comp_type_names
+
+# 4. Initialize the tube_assembly_id for comp_type.wide
+comp_type.wide$tube_assembly_id <- comp_type.wide1$tube_assembly_id
+
+# 5. Combine all the temporary data frames into a single wide dataframe by summing up component quantities
+# http://stackoverflow.com/questions/19730806/r-access-data-frame-column-using-variable
+for (col in comp_type_names) {
+  if (length(intersect(names(comp_type.wide1), col))) {
+    comp_type.wide[, col] <- comp_type.wide[, col] + comp_type.wide1[, col]
+  }
+  if (length(intersect(names(comp_type.wide2), col))) {
+    comp_type.wide[, col] <- comp_type.wide[, col] + comp_type.wide2[, col]
+  }
+  if (length(intersect(names(comp_type.wide3), col))) {
+    comp_type.wide[, col] <- comp_type.wide[, col] + comp_type.wide3[, col]
+  }
+  if (length(intersect(names(comp_type.wide4), col))) {
+    comp_type.wide[, col] <- comp_type.wide[, col] + comp_type.wide4[, col]
+  }
+  if (length(intersect(names(comp_type.wide5), col))) {
+    comp_type.wide[, col] <- comp_type.wide[, col] + comp_type.wide5[, col]
+  }
+  if (length(intersect(names(comp_type.wide6), col))) {
+    comp_type.wide[, col] <- comp_type.wide[, col] + comp_type.wide6[, col]
+  }
+  if (length(intersect(names(comp_type.wide7), col))) {
+    comp_type.wide[, col] <- comp_type.wide[, col] + comp_type.wide7[, col]
+  }
+  if (length(intersect(names(comp_type.wide8), col))) {
+    comp_type.wide[, col] <- comp_type.wide[, col] + comp_type.wide8[, col]
+  }
+}
+
+# 5a. Get rid of the 'NA' column (normally, empty value is interpreted as na, but since csv comes with 'NA', get rid of that)
+comp_type.wide$"NA" <- NULL
+dim(comp_type.wide)
+
+# 6. Remove all temporary dataframes
+remove(comp_type.wide1)
+remove(comp_type.wide2)
+remove(comp_type.wide3)
+remove(comp_type.wide4)
+remove(comp_type.wide5)
+remove(comp_type.wide6)
+remove(comp_type.wide7)
+remove(comp_type.wide8)
+
+# 7. Write the transformed output back to CSV
+write.csv(comp_type.wide, "D:/Kaggle/CAT/data/transformed/comp_type_wide.csv", row.names = F, na = "", sep = ",", col.names = T)
+
+# 8 Get tube_stats from comp_type
+# Count uniq_comp_types per tube_assembly_id
+accumulate_unique_comp_types <- function(df_new,  col_name) {
+  df_new$uniq_comp_types <- df_new$uniq_comp_types + as.numeric(comp_type.wide[, col_name] > 0)
+  return (df_new)
+}
+
+# Iterate over all comp_type columns
+for (col in comp_type_names) {
+  tube_stats <- accumulate_unique_comp_types(tube_stats, col)
+}
+
+
+```
+
+### Go through each component variable in raw.bom and re-map to component name based on components.csv
+```{r}
+map_comp_to_comp_name <- function(df_new, x_join_var, new_var_name) {
+  #x_join_var = 'component_id_1'
+  #new_var_name = 'comp_name_1'
+  # Go through each component variable in raw.bom and assign quantity to component name based on components.csv
+  df_new <- merge(x = df_new, y = raw.components, by.x = x_join_var, by.y = 'component_id', all.x = T, incomparables = NA)
+  # Rename the 'name' column and drop 'component_type_id' and 'component_id_x' column after join
+  names(df_new)[names(df_new) == "name"] <- new_var_name
+  df_new$component_type_id <- NULL
+  df_new$x_join_var <- NULL
+  return (df_new)
+  
+}
+
+raw.comp_name <- raw.bom
+raw.comp_name = map_comp_to_comp_name(raw.comp_name, 'component_id_1', 'comp_name_1')
+raw.comp_name = map_comp_to_comp_name(raw.comp_name, 'component_id_2', 'comp_name_2')
+raw.comp_name = map_comp_to_comp_name(raw.comp_name, 'component_id_3', 'comp_name_3')
+raw.comp_name = map_comp_to_comp_name(raw.comp_name, 'component_id_4', 'comp_name_4')
+raw.comp_name = map_comp_to_comp_name(raw.comp_name, 'component_id_5', 'comp_name_5')
+raw.comp_name = map_comp_to_comp_name(raw.comp_name, 'component_id_6', 'comp_name_6')
+raw.comp_name = map_comp_to_comp_name(raw.comp_name, 'component_id_7', 'comp_name_7')
+raw.comp_name = map_comp_to_comp_name(raw.comp_name, 'component_id_8', 'comp_name_8')
+# Sort dataframe by 'tube_assembly_id'
+raw.comp_name <- arrange(raw.comp_name, tube_assembly_id)
+
+```
+
+Notes - 
+- 297 component names in all; still a much more compressed format than component_id but 10x more categories than component_types
+
+
+### Transform newly minted raw.comp_name to wide form sparse matrix
+```{r}
+# 1. Transform each component column from long to wide form and store as a separate temporary dataframe
+comp_name.wide1 <- dcast(raw.comp_name, tube_assembly_id ~ comp_name_1, value.var = "quantity_1")
+comp_name.wide1[is.na(comp_name.wide1)] <- 0
+comp_name.wide2 <- dcast(raw.comp_name, tube_assembly_id ~ comp_name_2, value.var = "quantity_2")
+comp_name.wide2[is.na(comp_name.wide2)] <- 0
+comp_name.wide3 <- dcast(raw.comp_name, tube_assembly_id ~ comp_name_3, value.var = "quantity_3")
+comp_name.wide3[is.na(comp_name.wide3)] <- 0
+comp_name.wide4 <- dcast(raw.comp_name, tube_assembly_id ~ comp_name_4, value.var = "quantity_4")
+comp_name.wide4[is.na(comp_name.wide4)] <- 0
+comp_name.wide5 <- dcast(raw.comp_name, tube_assembly_id ~ comp_name_5, value.var = "quantity_5")
+comp_name.wide5[is.na(comp_name.wide5)] <- 0
+comp_name.wide6 <- dcast(raw.comp_name, tube_assembly_id ~ comp_name_6, value.var = "quantity_6")
+comp_name.wide6[is.na(comp_name.wide6)] <- 0
+comp_name.wide7 <- dcast(raw.comp_name, tube_assembly_id ~ comp_name_7, value.var = "quantity_7")
+comp_name.wide7[is.na(comp_name.wide7)] <- 0
+comp_name.wide8 <- dcast(raw.comp_name, tube_assembly_id ~ comp_name_8, value.var = "quantity_8")
+comp_name.wide8[is.na(comp_name.wide8)] <- 0
+
+# 2. Get the union of component names C-xxxx
+num_comp_names <- length(levels(raw.components$name))
+comp_name_names <- levels(raw.components$name)
+
+# 3. Create an empty output dataframe with correct dimensions and column names
+comp_name.wide <- as.data.frame(matrix(0, ncol = num_comp_names, nrow = dim(bom.wide)[1]))
+names(comp_name.wide) <- comp_name_names
+
+# 4. Initialize the tube_assembly_id for comp_name.wide
+comp_name.wide$tube_assembly_id <- comp_name.wide1$tube_assembly_id
+
+# 5. Combine all the temporary data frames into a single wide dataframe by summing up component quantities
+# http://stackoverflow.com/questions/19730806/r-access-data-frame-column-using-variable
+for (col in comp_name_names) {
+  if (length(intersect(names(comp_name.wide1), col))) {
+    comp_name.wide[, col] <- comp_name.wide[, col] + comp_name.wide1[, col]
+  }
+  if (length(intersect(names(comp_name.wide2), col))) {
+    comp_name.wide[, col] <- comp_name.wide[, col] + comp_name.wide2[, col]
+  }
+  if (length(intersect(names(comp_name.wide3), col))) {
+    comp_name.wide[, col] <- comp_name.wide[, col] + comp_name.wide3[, col]
+  }
+  if (length(intersect(names(comp_name.wide4), col))) {
+    comp_name.wide[, col] <- comp_name.wide[, col] + comp_name.wide4[, col]
+  }
+  if (length(intersect(names(comp_name.wide5), col))) {
+    comp_name.wide[, col] <- comp_name.wide[, col] + comp_name.wide5[, col]
+  }
+  if (length(intersect(names(comp_name.wide6), col))) {
+    comp_name.wide[, col] <- comp_name.wide[, col] + comp_name.wide6[, col]
+  }
+  if (length(intersect(names(comp_name.wide7), col))) {
+    comp_name.wide[, col] <- comp_name.wide[, col] + comp_name.wide7[, col]
+  }
+  if (length(intersect(names(comp_name.wide8), col))) {
+    comp_name.wide[, col] <- comp_name.wide[, col] + comp_name.wide8[, col]
+  }
+}
+
+# 5a. Get rid of the 'NA' column (normally, empty value is interpreted as na, but since csv comes with 'NA', get rid of that)
+comp_name.wide$"NA" <- NULL
+dim(comp_name.wide)
+
+# 6. Remove all temporary dataframes
+remove(comp_name.wide1)
+remove(comp_name.wide2)
+remove(comp_name.wide3)
+remove(comp_name.wide4)
+remove(comp_name.wide5)
+remove(comp_name.wide6)
+remove(comp_name.wide7)
+remove(comp_name.wide8)
+
+# 7. Write the transformed output back to CSV
+write.csv(comp_name.wide, "D:/Kaggle/CAT/data/transformed/comp_name_wide.csv", row.names = F, na = "", sep = ",", col.names = T)
+
+# 8 Get tube_stats from comp_name
+# Count uniq_comp_names per tube_assembly_id
+accumulate_unique_comp_names <- function(df_new,  col_name) {
+  df_new$uniq_comp_names <- df_new$uniq_comp_names + as.numeric(comp_name.wide[, col_name] > 0)
+  return (df_new)
+}
+
+# Iterate over all comp_name columns
+for (col in comp_name_names) {
+  tube_stats <- accumulate_unique_comp_names(tube_stats, col)
+}
+
+```
+
+
+### Transform Specs into a wide form sparse matrix - upto 10 specs per 'tube_assembly_id'
+
+```{r}
+
+# 1. Transform each component column from long to wide form and store as a separate temporary dataframe
+raw.spec$specq_1 <- 1
+spec.wide1 <- dcast(raw.spec, tube_assembly_id ~ spec1, value.var = "specq_1")
+spec.wide1[is.na(spec.wide1)] <- 0
+raw.spec$specq_2 <- 1
+spec.wide2 <- dcast(raw.spec, tube_assembly_id ~ spec2, value.var = "specq_2")
+spec.wide2[is.na(spec.wide2)] <- 0
+raw.spec$specq_3 <- 1
+spec.wide3 <- dcast(raw.spec, tube_assembly_id ~ spec3, value.var = "specq_3")
+spec.wide3[is.na(spec.wide3)] <- 0
+raw.spec$specq_4 <- 1
+spec.wide4 <- dcast(raw.spec, tube_assembly_id ~ spec4, value.var = "specq_4")
+spec.wide4[is.na(spec.wide4)] <- 0
+raw.spec$specq_5 <- 1
+spec.wide5 <- dcast(raw.spec, tube_assembly_id ~ spec5, value.var = "specq_5")
+spec.wide5[is.na(spec.wide5)] <- 0
+raw.spec$specq_6 <- 1
+spec.wide6 <- dcast(raw.spec, tube_assembly_id ~ spec6, value.var = "specq_6")
+spec.wide6[is.na(spec.wide6)] <- 0
+raw.spec$specq_7 <- 1
+spec.wide7 <- dcast(raw.spec, tube_assembly_id ~ spec7, value.var = "specq_7")
+spec.wide7[is.na(spec.wide7)] <- 0
+raw.spec$specq_8 <- 1
+spec.wide8 <- dcast(raw.spec, tube_assembly_id ~ spec8, value.var = "specq_8")
+spec.wide8[is.na(spec.wide8)] <- 0
+raw.spec$specq_9 <- 1
+spec.wide9 <- dcast(raw.spec, tube_assembly_id ~ spec9, value.var = "specq_9")
+spec.wide9[is.na(spec.wide9)] <- 0
+raw.spec$specq_10 <- 1
+spec.wide10 <- dcast(raw.spec, tube_assembly_id ~ spec10, value.var = "specq_10")
+spec.wide10[is.na(spec.wide10)] <- 0
+  
+# 1a. Get tube_stats from specifications
+# Convert the NAs to 0 prior to summing
+raw.spec[is.na(raw.spec)] <- 0
+# Count uniq_specs per tube_assembly_id
+tube_stats$uniq_specs = as.numeric(!is.na(raw.spec$spec1)) + as.numeric(!is.na(raw.spec$spec2)) +
+    as.numeric(!is.na(raw.spec$spec3)) + as.numeric(!is.na(raw.spec$spec4)) +
+    as.numeric(!is.na(raw.spec$spec5)) + as.numeric(!is.na(raw.spec$spec6)) +
+    as.numeric(!is.na(raw.spec$spec7)) + as.numeric(!is.na(raw.spec$spec8)) +
+    as.numeric(!is.na(raw.spec$spec9)) + as.numeric(!is.na(raw.spec$spec10))
+
+
+# 2. Get the union of spec names SP-xxxx
+specs <- union(names(spec.wide1), names(spec.wide2))
+specs <- union(specs, names(spec.wide3))
+specs <- union(specs, names(spec.wide4))
+specs <- union(specs, names(spec.wide5))
+specs <- union(specs, names(spec.wide6))
+specs <- union(specs, names(spec.wide7))
+specs <- union(specs, names(spec.wide8))
+specs <- union(specs, names(spec.wide9))
+specs <- union(specs, names(spec.wide10))
+length(specs)
+
+# 3. Create an empty output dataframe with correct dimensions and column names
+spec.wide <- as.data.frame(matrix(0, ncol = length(specs), nrow = dim(spec.wide1)[1]))
+names(spec.wide) <- specs
+# 3a. Initialize the tube_assembly_id for spec.wide
+spec.wide$tube_assembly_id <- spec.wide1$tube_assembly_id
+
+# 4. Remove "tube_assembly_id" from specs
+specs <- setdiff(specs, "tube_assembly_id")
+
+# 5. Combine all the temporary data frames into a single wide dataframe by summing up spec quantities
+# http://stackoverflow.com/questions/19730806/r-access-data-frame-column-using-variable
+for (col in specs) {
+  if (length(intersect(names(spec.wide1), col))) {
+    spec.wide[, col] <- spec.wide[, col] + spec.wide1[, col]
+  }
+  if (length(intersect(names(spec.wide2), col))) {
+    spec.wide[, col] <- spec.wide[, col] + spec.wide2[, col]
+  }
+  if (length(intersect(names(spec.wide3), col))) {
+    spec.wide[, col] <- spec.wide[, col] + spec.wide3[, col]
+  }
+  if (length(intersect(names(spec.wide4), col))) {
+    spec.wide[, col] <- spec.wide[, col] + spec.wide4[, col]
+  }
+  if (length(intersect(names(spec.wide5), col))) {
+    spec.wide[, col] <- spec.wide[, col] + spec.wide5[, col]
+  }
+  if (length(intersect(names(spec.wide6), col))) {
+    spec.wide[, col] <- spec.wide[, col] + spec.wide6[, col]
+  }
+  if (length(intersect(names(spec.wide7), col))) {
+    spec.wide[, col] <- spec.wide[, col] + spec.wide7[, col]
+  }
+  if (length(intersect(names(spec.wide8), col))) {
+    spec.wide[, col] <- spec.wide[, col] + spec.wide8[, col]
+  }
+  if (length(intersect(names(spec.wide9), col))) {
+    spec.wide[, col] <- spec.wide[, col] + spec.wide9[, col]
+  }
+  if (length(intersect(names(spec.wide10), col))) {
+    spec.wide[, col] <- spec.wide[, col] + spec.wide10[, col]
+  }
+}
+
+# 5a. Get rid of the 'NA' column (normally, empty value is interpreted as na, but since csv comes with 'NA', get rid of that)
+spec.wide$"NA" <- NULL
+dim(spec.wide)
+
+# 6. Remove all temporary dataframes
+remove(spec.wide1)
+remove(spec.wide2)
+remove(spec.wide3)
+remove(spec.wide4)
+remove(spec.wide5)
+remove(spec.wide6)
+remove(spec.wide7)
+remove(spec.wide8)
+remove(spec.wide9)
+remove(spec.wide10)
+
+# 7. Write the transformed output back to CSV
+write.csv(spec.wide, "D:/Kaggle/CAT/data/transformed/spec_wide.csv", row.names = F, na = "", sep = ",", col.names = T)
+
+```
+- *** Total of 85 specs after the wide form transformation
+- Number of specs are limited compared to BOM components, so maybe we don't TfidfTransformer + SVD; need to see
+
+### Merge tubes.csv and tube_end_form.csv and only retain rows from left table
+```{r}
+
+tubes <- merge(x = raw.tubes, y = raw.tube_end_form, by.x = "end_a", by.y = "end_form_id", all.x = T)
+tubes$a_forming <- tubes$forming
+tubes$forming <- NULL
+tubes <- merge(x = tubes, y = raw.tube_end_form, by.x = "end_x", by.y = "end_form_id", all.x = T)
+tubes$x_forming <- tubes$forming
+tubes$forming <- NULL
+
+# Convert all Factor Variables to numeric to avoid label encoding again in Python
+# Binary variables
+tubes$x_forming <- as.numeric(tubes$x_forming) - 1
+tubes$a_forming <- as.numeric(tubes$a_forming) - 1
+tubes$end_a_1x <- as.numeric(tubes$end_a_1x) - 1
+tubes$end_a_2x <- as.numeric(tubes$end_a_2x) - 1
+tubes$end_x_1x <- as.numeric(tubes$end_x_1x) - 1
+tubes$end_x_2x <- as.numeric(tubes$end_x_2x) - 1
+
+# Factored variables
+tubes$end_x <- as.numeric(tubes$end_x) - 1
+tubes$end_a <- as.numeric(tubes$end_a) - 1
+tubes$material_id <- as.numeric(tubes$material_id) - 1
+
+# Calculate the amount of tube material
+tubes$tube_material = with(tubes, (pi*(diameter/2)^2 - pi*((diameter - wall)/2)^2)*length)
+
+# Write transformed tubes back as CSV (Write NA as empty value so that Python can pick it up correctly)
+write.csv(tubes, "D:/Kaggle/CAT/data/transformed/tubes_transformed.csv", row.names = F, na = "", sep = ",", col.names = T)
+
+# Create another with tube_stats (retain older one as well)
+tubes2 <- merge(x = tubes, y = tube_stats, by = 'tube_assembly_id', all.x = T)
+
+# Write transformed tubes2 back as CSV (Write NA as empty value so that Python can pick it up correctly)
+write.csv(tubes2, "D:/Kaggle/CAT/data/transformed/tubes_transformed_v2.csv", row.names = F, na = "", sep = ",", col.names = T)
+
+
+```
+
+

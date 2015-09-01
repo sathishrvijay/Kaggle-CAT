@@ -1,0 +1,104 @@
+---
+title: "XGBoost Regressor for Kaggle CAT"
+author: "Vijay Sathish"
+date: "Wednesday, July 15, 2015"
+output: html_document
+---
+
+```{r loading}
+require(xgboost)
+require(methods)
+require(data.table)
+require(magrittr)
+```
+
+
+### Load in training and test sets and pre-process
+```{r}
+
+train.xg <- read.csv("D:/Kaggle/CAT/inter/spec84_nontrans_compname_train.csv", header = T)
+test.xg <- read.csv("D:/Kaggle/CAT/inter/spec84_nontrans_compname_test.csv", header = T)
+
+```
+
+
+### Pre-processing 
+- Collect 'ids' into a different data frame for test set
+- Collect 'cost' into separate dataframe for train set
+- Delete 'tube_assembly_id' from both datasets
+- Delete 'ids' from test df and 'cost' from train df
+
+```{r}
+test.xg.ids <- data.frame(test.xg$ids) 
+names(test.xg.ids) <- c('ids')
+
+labels <- data.frame(train.xg$cost)
+names(labels) <- c('cost')
+labels <- as.matrix(labels)
+
+train.xg$tube_assembly_id <- NULL
+train.xg$cost <- NULL
+
+test.xg$tube_assembly_id <- NULL
+test.xg$ids <- NULL
+
+dim(train.xg)
+dim(test.xg)
+
+```
+
+
+### xgboost does not work with data frames yet
+```{r convertToNumericMatrix}
+features.xg.train <- train.xg %>% as.matrix
+features.xg.test <- as.matrix(test.xg) 
+
+```
+
+
+### xgboost Cross-Validation
+```{r}
+
+# There seems to be a ton of objectives, check which ones are applicable for me
+# booster can be gbtree or gblinear
+# Might need to try different values for scale_pos_weight to see if we can improve auc
+param_list <- list('booster' = 'gbtree',
+        "objective" = "reg:linear",       
+        "max_depth" = 6,
+        "eta" = 0.07,               # Equivalent to learning_rate    
+        "nthread" = 1,  
+        "subsample" = 0.9,
+        # "silent" = 1,             # if we don't want output for each iteration
+        "column_subsample" = 1.0)
+
+cv.nround <- 2500      # This is number of trees to build
+cv.nfold <- 5        # Figure out if we can do stratified n-fold with some extra option
+
+bst.cv <- xgb.cv(param = param_list, data = features.xg.train, label = labels, 
+                nfold = cv.nfold, nrounds = cv.nround, set.seed(30))
+
+
+```
+
+
+### xgboost Training & Prediction
+```{r}
+nround <- 4000
+bst <- xgboost (param = param_list, data = features.xg.train, label = labels, nrounds = nround, set.seed(3048), early_stopping_rounds = 10)
+
+preds <- predict(bst, features.xg.test)
+submission <- cbind(data.frame(expm1(preds)), test.xg.ids)
+names(submission) <- c('cost', 'id')
+dim(submission)
+head(submission)
+
+```
+
+
+### Write output to submission file
+```{r}
+write.csv(submission, "D:/Kaggle/CAT/results/xgb_spec84_nontrans_compname_v4.csv", row.names = F, sep = ",", col.names = T)
+
+```
+
+
